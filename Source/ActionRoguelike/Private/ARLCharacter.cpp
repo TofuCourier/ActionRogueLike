@@ -7,6 +7,10 @@
 #include "EnhancedInputComponent.h"
 #include "GameFramework/PlayerController.h"
 #include "EnhancedInputSubsystems.h"
+#include "GameFramework/CharacterMovementComponent.h"
+#include "ARLInteractionComponent.h"
+#include "ARLAttributeComponent.h"
+#include "Kismet/GameplayStatics.h"
 
 // Sets default values
 AARLCharacter::AARLCharacter()
@@ -20,15 +24,31 @@ AARLCharacter::AARLCharacter()
 
 	SpringArmComp->SetUsingAbsoluteRotation(true);
 
-	CameraComp = CreateDefaultSubobject<UCameraComponent>("CameraComp");
+	CameraComp = CreateDefaultSubobject<UCameraComponent>(TEXT("CameraComp"));
 	CameraComp->SetupAttachment(SpringArmComp);
 
+	InteractionComp = CreateDefaultSubobject<UARLInteractionComponent>(TEXT("InteractionComp"));
+
+	AttributeComp = CreateDefaultSubobject<UARLAttributeComponent>(TEXT("AttributeComp"));
+
+	//ActionComp = CreateDefaultSubobject<UActionComponent>(TEXT("ActionComp"));
+
+	GetCharacterMovement()->bOrientRotationToMovement = true;
+
 	//GetCharacterMovement()->bOrientRotationToMovement = true;
-	//bUseControllerRotationYaw = false;
+	bUseControllerRotationYaw = false;
+
+	//TimeToHitParamName = TEXT("TimeToHit");
 
 }
 
-// Called when the game starts or when spawned
+void AARLCharacter::PostInitializeComponents()
+{
+	Super::PostInitializeComponents();
+
+	AttributeComp->OnHealthChanged.AddDynamic(this, &AARLCharacter::OnHealthChanged);
+}
+
 void AARLCharacter::BeginPlay()
 {
 	Super::BeginPlay();
@@ -41,6 +61,12 @@ void AARLCharacter::BeginPlay()
 		}
 	}
 	
+}
+
+void AARLCharacter::Tick(float DeltaTime)
+{
+	Super::Tick(DeltaTime);
+
 }
 
 void AARLCharacter::Move(const FInputActionInstance& Instance)
@@ -104,12 +130,113 @@ void AARLCharacter::LookStick(const FInputActionValue& InputValue)
 	AddControllerPitchInput(Value.Y * (LookPitchRate) * GetWorld()->GetDeltaSeconds());
 }
 
-// Called every frame
-void AARLCharacter::Tick(float DeltaTime)
-{
-	Super::Tick(DeltaTime);
 
+void AARLCharacter::PrimaryInteract(const FInputActionValue& InputValue)
+{
+	if (InteractionComp)
+	{
+		InteractionComp->PrimaryInteract();
+	}
 }
+
+void AARLCharacter::PrimaryAttack(const FInputActionValue& InputValue)
+{
+	AttackStart();
+
+	GetWorldTimerManager().SetTimer(TimerHandle_PrimaryAttack, this, &AARLCharacter::PrimaryAttack_TimerELapsed, 0.2F);
+	//ActionComp->StartActionByName(this, SharedGameplayTags::Action_PrimaryAttack);
+}
+
+void AARLCharacter::PrimaryAttack_TimerELapsed()
+{
+	if (ensure(PrimaryProjectileClass))
+	{
+		SpawnProjectile(PrimaryProjectileClass);
+	}
+}
+
+void AARLCharacter::SecondaryAttack(const FInputActionValue& InputValue)
+{
+	AttackStart();
+
+	GetWorldTimerManager().SetTimer(TimerHandle_SecondaryAttack, this, &AARLCharacter::SecondaryAttack_TimerELapsed, 0.2f);
+}
+
+
+void AARLCharacter::SecondaryAttack_TimerELapsed()
+{
+	if (ensure(SecondaryProjectileClass))
+	{
+		SpawnProjectile(SecondaryProjectileClass);
+	}
+}
+
+void AARLCharacter::Teleport(const FInputActionValue& InputValue)
+{
+	AttackStart();
+	//PlayAnimMontage(AttackAnim);
+	GetWorldTimerManager().SetTimer(TimerHandle_Teleport, this, &AARLCharacter::Teleport_TimerElapsed, 0.2f);
+}
+
+void AARLCharacter::Teleport_TimerElapsed()
+{
+	if (ensure(TeleportProjectileClass))
+	{
+		SpawnProjectile(TeleportProjectileClass);
+	}
+}
+
+void AARLCharacter::SpawnProjectile(TSubclassOf<AActor> ClassToSpawn)
+{
+	AController* OwnerController = GetController();
+
+	if (OwnerController)
+	{
+		FVector MuzzleLocation = GetMesh()->GetSocketLocation(TEXT("Muzzle_01"));
+
+		UGameplayStatics::SpawnEmitterAttached(AttackEffect, GetMesh(), TEXT("Muzzle_01"));
+
+
+		FActorSpawnParameters SpawnParams;
+		SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+		SpawnParams.Instigator = this;
+
+		FCollisionShape Shape;
+		Shape.SetSphere(20.0f);
+
+		FCollisionQueryParams QueryParams;
+		QueryParams.AddIgnoredActor(this);
+
+		FCollisionObjectQueryParams ObjParams;
+		ObjParams.AddObjectTypesToQuery(ECC_WorldStatic);
+		ObjParams.AddObjectTypesToQuery(ECC_WorldDynamic);
+		ObjParams.AddObjectTypesToQuery(ECC_Pawn);
+
+
+		FVector Location;
+		FRotator Rotation;
+
+		OwnerController->GetPlayerViewPoint(Location, Rotation);
+
+
+		FVector TraceEnd = Location + Rotation.Vector() * ProjectileRange;
+
+		FHitResult Hit;
+		if (GetWorld()->SweepSingleByObjectType(Hit, Location, TraceEnd, FQuat::Identity, ObjParams, Shape, QueryParams))
+		{
+			TraceEnd = Hit.ImpactPoint;
+		}
+
+		FRotator ProjRotation = FRotationMatrix::MakeFromX(TraceEnd - MuzzleLocation).Rotator();
+
+
+		FTransform SpawnTM = FTransform(ProjRotation, MuzzleLocation);
+
+
+		AActor* Proj = GetWorld()->SpawnActor<AActor>(ClassToSpawn, SpawnTM, SpawnParams);
+	}
+}
+
 
 // Called to bind functionality to input
 void AARLCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputComponent)
@@ -132,8 +259,8 @@ void AARLCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputCompon
 
 	// General
 	InputComp->BindAction(Input_Move, ETriggerEvent::Triggered, this, &AARLCharacter::Move);
-	//InputComp->BindAction(Input_Jump, ETriggerEvent::Triggered, this, &ACharacter::Jump);
-	//InputComp->BindAction(Input_Interact, ETriggerEvent::Triggered, this, &ASCharacter::PrimaryInteract);
+	InputComp->BindAction(Input_Jump, ETriggerEvent::Triggered, this, &ACharacter::Jump);
+	InputComp->BindAction(Input_Interact, ETriggerEvent::Triggered, this, &AARLCharacter::PrimaryInteract);
 
 	// Sprint while key is held
 	//InputComp->BindAction(Input_Sprint, ETriggerEvent::Started, this, &ASCharacter::SprintStart);
@@ -145,12 +272,37 @@ void AARLCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputCompon
 	InputComp->BindAction(Input_LookStick, ETriggerEvent::Triggered, this, &AARLCharacter::LookStick);
 
 	// Abilities
-	//InputComp->BindAction(Input_PrimaryAttack, ETriggerEvent::Triggered, this, &ASCharacter::PrimaryAttack);
-	//InputComp->BindAction(Input_SecondaryAttack, ETriggerEvent::Triggered, this, &ASCharacter::BlackHoleAttack);
-	//InputComp->BindAction(Input_Dash, ETriggerEvent::Triggered, this, &ASCharacter::Dash);
+	InputComp->BindAction(Input_PrimaryAttack, ETriggerEvent::Triggered, this, &AARLCharacter::PrimaryAttack);
+	InputComp->BindAction(Input_SecondaryAttack, ETriggerEvent::Triggered, this, &AARLCharacter::SecondaryAttack);
+	InputComp->BindAction(Input_Teleport, ETriggerEvent::Triggered, this, &AARLCharacter::Teleport);
 
-	// Special
-	//InputComp->BindAction(Input_PrimaryAttack, ETriggerEvent::Triggered, this, &ASCharacter::PrimaryAttack);
 
 }
+
+void AARLCharacter::OnHealthChanged(AActor* InstigatorActor, UARLAttributeComponent* OwningComp, float NewHealth, float Delta)
+{
+	if (Delta < 0.0f)
+	{/*
+		UMaterialInstanceDynamic* MaterialInstance = GetMesh()->CreateAndSetMaterialInstanceDynamic(0);
+		if (!MaterialInstance)
+		{
+			return;
+		}*/
+		GetMesh()->SetScalarParameterValueOnMaterials("TimeToHit", GetWorld()->TimeSeconds);
+	}
+	if (NewHealth <= 0.0f && Delta < 0.0f)
+	{
+		APlayerController* PlayerController = Cast<APlayerController>(Controller);
+		DisableInput(PlayerController);
+	}
+}
+
+
+void AARLCharacter::AttackStart()
+{
+	PlayAnimMontage(AttackAnim);
+
+	UGameplayStatics::SpawnEmitterAttached(AttackEffect, GetMesh(), TEXT("Muzzle_01"));
+}
+
 
